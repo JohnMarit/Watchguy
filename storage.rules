@@ -1,0 +1,22 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function memberPath(orgId) {
+      return /databases/(default)/documents/organizations/$(orgId)/members/$(request.auth.uid);
+    }
+
+    function isMember(orgId) {
+      return request.auth != null && firestore.exists(memberPath(orgId));
+    }
+
+    match /orgs/{orgId}/incidents/{incidentId}/{fileName} {
+      allow read: if isMember(orgId);
+      allow write: if isMember(orgId)
+        && request.resource.size < 200 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*|video/.*');
+      allow delete: if isMember(orgId)
+        && firestore.get(memberPath(orgId)).data.role in ['owner', 'admin'];
+    }
+  }
+}

@@ -1,0 +1,101 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function memberPath(orgId) {
+      return /databases/$(database)/documents/organizations/$(orgId)/members/$(request.auth.uid);
+    }
+
+    function memberExists(orgId) {
+      return signedIn() && exists(memberPath(orgId));
+    }
+
+    function memberRole(orgId) {
+      return get(memberPath(orgId)).data.role;
+    }
+
+    function isAdmin(orgId) {
+      return memberExists(orgId) && memberRole(orgId) in ['owner', 'admin'];
+    }
+
+    function isOperator(orgId) {
+      return memberExists(orgId) && memberRole(orgId) in ['owner', 'admin', 'securityOperator'];
+    }
+
+    match /users/{userId} {
+      allow read, write: if signedIn() && request.auth.uid == userId;
+    }
+
+    match /organizations/{orgId} {
+      allow create: if signedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && request.resource.data.keys().hasAll(['name', 'ownerId', 'createdAt']);
+      allow read: if memberExists(orgId);
+      allow update, delete: if isAdmin(orgId);
+
+      match /members/{memberId} {
+        allow read: if memberExists(orgId);
+        allow create: if isAdmin(orgId)
+          || (signedIn()
+              && memberId == request.auth.uid
+              && request.resource.data.role == 'owner'
+              && get(/databases/$(database)/documents/organizations/$(orgId)).data.ownerId == request.auth.uid);
+        allow update, delete: if isAdmin(orgId);
+      }
+
+      match /cameras/{cameraId} {
+        allow read: if memberExists(orgId);
+        allow create: if isAdmin(orgId)
+          && request.resource.data.organizationId == orgId;
+        allow delete: if isAdmin(orgId);
+        allow update: if memberExists(orgId)
+          && request.resource.data.organizationId == resource.data.organizationId
+          && request.resource.data.operatorUserId == resource.data.operatorUserId
+          && (
+            isAdmin(orgId)
+            || resource.data.operatorUserId == request.auth.uid
+          );
+      }
+
+      match /incidents/{incidentId} {
+        allow read: if memberExists(orgId);
+        allow create: if memberExists(orgId)
+          && request.resource.data.organizationId == orgId
+          && request.resource.data.reviewState == 'unreviewed'
+          && request.resource.data.riskScore is int
+          && request.resource.data.riskScore >= 0
+          && request.resource.data.riskScore <= 100;
+        allow update: if isOperator(orgId)
+          && request.resource.data.organizationId == resource.data.organizationId
+          && request.resource.data.cameraId == resource.data.cameraId;
+        allow delete: if isAdmin(orgId);
+      }
+
+      match /zones/{zoneId} {
+        allow read: if memberExists(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      match /rules/{ruleId} {
+        allow read: if memberExists(orgId);
+        allow write: if isAdmin(orgId);
+      }
+
+      // Pairing secrets are written only by Cloud Functions (admin SDK bypasses rules).
+      match /pairingTokens/{tokenId} {
+        allow read, write: if false;
+      }
+
+      match /liveSessions/{sessionId} {
+        allow read: if memberExists(orgId);
+        allow create, update: if memberExists(orgId)
+          && request.resource.data.organizationId == orgId;
+        allow delete: if isOperator(orgId);
+      }
+    }
+  }
+}
